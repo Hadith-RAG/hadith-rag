@@ -8,7 +8,7 @@ client = chromadb.PersistentClient(path="./chroma_db")
 collection = client.get_collection("hadith_collection")
 
 # Query text
-query = "Hadith about intention"
+query = "Hadith about Salah"
 
 # Create embedding
 response = ollama.embeddings(
@@ -21,7 +21,7 @@ query_embedding = response["embedding"]
 # Search
 results = collection.query(
     query_embeddings=[query_embedding],
-    n_results=2
+    n_results=10
 )
 
 # Print results
