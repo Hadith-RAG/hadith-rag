@@ -1,8 +1,8 @@
 # Hadith RAG
 
-A semantic search system over **Sahih al-Bukhari** hadiths using text embeddings and vector similarity search. Ask a question in plain English and get the most relevant hadiths back instantly.
+A semantic search and question-answering system over **Sahih al-Bukhari** hadiths. Ask a question in plain English — the system retrieves the most relevant hadiths and uses a local LLM to compose a grounded, scholarly answer.
 
-**Stack:** Python · ChromaDB · Ollama · nomic-embed-text
+**Stack:** Python · ChromaDB · Ollama · nomic-embed-text · llama3.1:8b
 
 ---
 
@@ -10,12 +10,13 @@ A semantic search system over **Sahih al-Bukhari** hadiths using text embeddings
 
 ```
 hadith-rag/
-├── data.py          # Dataset — 100 hadiths from Sahih al-Bukhari
-├── store.py         # Step 1 — Embed hadiths and store in ChromaDB
-├── search.py        # Step 2 — Search hadiths by semantic similarity
-├── chroma_db/       # Auto-generated vector database (gitignored)
-├── Requirements.md  # Full list of dependencies
-└── README.md        # You are here
+├── data.py            # Dataset — 100 hadiths from Sahih al-Bukhari
+├── generate_data.py   # Generates data.py from the raw Bukhari JSON
+├── store.py           # Step 1 — Embed hadiths and store in ChromaDB
+├── search.py          # Step 2 — Ask a question, get an LLM answer + references
+├── chroma_db/         # Auto-generated vector database (gitignored)
+├── Requirements.md    # Full list of dependencies
+└── README.md          # You are here
 ```
 
 ---
@@ -74,14 +75,15 @@ source venv/bin/activate
 pip install chromadb ollama
 ```
 
-### 5. Set Up Ollama
+### 5. Set Up Ollama Models
 
 1. Download and install Ollama from [ollama.com](https://ollama.com/download)
 2. Start the Ollama application
-3. Pull the embedding model:
+3. Pull both required models:
 
 ```bash
 ollama pull nomic-embed-text
+ollama pull llama3.1:8b
 ```
 
 > Ollama must be **running in the background** whenever you use `store.py` or `search.py`.
@@ -92,7 +94,7 @@ ollama pull nomic-embed-text
 
 ### Step 1: Store Hadiths
 
-Run `store.py` to embed all 100 hadiths and save them to the local ChromaDB database:
+Run `store.py` once to embed all 100 hadiths and save them to the local ChromaDB database:
 
 ```bash
 python store.py
@@ -104,60 +106,72 @@ python store.py
 SUCCESS: Stored in ChromaDB
 ```
 
-This creates the `chroma_db/` directory with the vector index. You only need to run this **once** (or again if you update `data.py`).
+You only need to run this **once** (or again if you update `data.py`).
 
-### Step 2: Search Hadiths
+### Step 2: Ask a Question
 
-Run `search.py` to search the stored hadiths by meaning:
+Run `search.py` to ask a question and get an LLM-generated answer:
 
 ```bash
 python search.py
 ```
 
-You will be prompted to enter a search query:
+You will be prompted to enter a question:
 
 ```
-Enter your search query: Hadith about patience
+Enter your question: What does Islam say about good deeds?
 ```
 
-The system returns the **top 10** most semantically similar hadiths:
+**Example output:**
 
 ```
-Query: Hadith about patience
+--- LLM Answer ---
 
-Results:
+Based on the hadiths provided, Islam places great emphasis on good deeds...
+[Streamed word-by-word as the model generates]
 
-Hadith: Narrated Abu Said Al-Khudri ...
-Book: Sahih al-Bukhari
-Number: 32
+--- Referenced Hadiths ---
 
----
+[1] Sahih al-Bukhari | Hadith #28
+    Narrated Abu Huraira: The Prophet said, "To feed (the poor)..."
 
-Hadith: ...
+[2] Sahih al-Bukhari | Hadith #43
+    Narrated 'Aisha: ...the best deed in the sight of Allah is that which is done regularly.
+
+[3] Sahih al-Bukhari | Hadith #59
+    ...
 ```
-
-You can run `search.py` as many times as you want with different queries.
 
 ---
 
 ## How It Works
 
 ```
-┌──────────┐     ┌───────────┐     ┌──────────┐
-│  data.py │────>│  store.py │────>│ ChromaDB │
-│ 100 hadiths    │ embed via  │     │ vector   │
-│          │     │ Ollama     │     │ database │
-└──────────┘     └───────────┘     └────┬─────┘
-                                        │
-┌──────────┐     ┌───────────┐          │
-│  User    │────>│ search.py │──────────┘
-│  Query   │     │ embed +   │   similarity
-│          │     │ search    │   search
-└──────────┘     └───────────┘
+┌──────────┐     ┌───────────┐     ┌──────────────┐
+│  data.py │────>│  store.py │────>│   ChromaDB   │
+│ 100 hadiths    │ embed via  │     │ vector store │
+│          │     │ nomic-embed│     └──────┬───────┘
+└──────────┘     └───────────┘            │
+                                          │ similarity search
+┌──────────┐     ┌───────────┐            │
+│  User    │────>│ search.py │────────────┘
+│ Question │     │ embed +   │
+│          │     │ retrieve  │────> llama3.1:8b
+└──────────┘     └───────────┘           │
+                                         ▼
+                              ┌─────────────────────┐
+                              │   LLM Answer        │
+                              │   (streamed live)   │
+                              ├─────────────────────┤
+                              │  Referenced Hadiths │
+                              │  [1] Book | #N      │
+                              └─────────────────────┘
 ```
 
-1. **Store phase** — Each hadith text is converted into a numerical vector (embedding) using the `nomic-embed-text` model via Ollama, then stored in ChromaDB
-2. **Search phase** — Your query is embedded the same way, and ChromaDB finds the hadiths whose vectors are closest in meaning
+1. **Store phase** — Each hadith is converted into a vector embedding using `nomic-embed-text` via Ollama, then stored in ChromaDB
+2. **Search phase** — Your question is embedded the same way; ChromaDB finds the top 3 most semantically similar hadiths
+3. **Answer phase** — The retrieved hadiths + your question are sent to `llama3.1:8b` with a system prompt; the answer streams live to your terminal
+4. **References** — The 3 source hadiths are printed at the end so every claim is traceable
 
 ---
 
@@ -166,7 +180,8 @@ You can run `search.py` as many times as you want with different queries.
 - `chroma_db/` is auto-generated and included in `.gitignore` — do not commit it
 - To rebuild the database, delete the `chroma_db/` folder and re-run `python store.py`
 - The dataset contains the **first 100 hadiths** from Sahih al-Bukhari with full English narrator and text
-- Each hadith entry in `data.py` has: `id`, `text`, `book`, and `number`
+- The LLM answer streams word-by-word — first output appears within a few seconds
+- Generation time depends on your hardware (CPU: ~1–3 min, GPU: much faster)
 
 ---
 
