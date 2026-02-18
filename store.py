@@ -1,15 +1,24 @@
 import chromadb
 import ollama
 from data import hadiths
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Get configuration from environment variables
+CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text:v1.5")
 
 # Use PersistentClient (IMPORTANT)
-client = chromadb.PersistentClient(path="./chroma_db")
+client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 
 collection = client.get_or_create_collection("hadith_collection")
 
 def get_embedding(text):
     response = ollama.embeddings(
-        model="nomic-embed-text",
+        model=EMBEDDING_MODEL,
         prompt=text
     )
     return response["embedding"]

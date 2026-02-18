@@ -1,19 +1,30 @@
 import chromadb
 import ollama
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Get configuration from environment variables
+CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text:v1.5")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemma3:4b")
+N_RESULTS = int(os.getenv("N_RESULTS", "3"))
 
 # Connect to ChromaDB
-client = chromadb.PersistentClient(path="./chroma_db")
+client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 collection = client.get_collection("hadith_collection")
 
 # Get user query
 query = input("Enter your question: ")
 
 # Embed the query
-response = ollama.embeddings(model="nomic-embed-text", prompt=query)
+response = ollama.embeddings(model=EMBEDDING_MODEL, prompt=query)
 query_embedding = response["embedding"]
 
 # Retrieve top relevant hadiths (3 is enough — keeps context small and fast)
-results = collection.query(query_embeddings=[query_embedding], n_results=3)
+results = collection.query(query_embeddings=[query_embedding], n_results=N_RESULTS)
 
 # Collect retrieved hadiths
 context_parts = []
@@ -28,7 +39,7 @@ context = "\n\n".join(context_parts)
 # Stream the LLM answer word-by-word
 print("\n--- LLM Answer ---\n")
 stream = ollama.chat(
-    model="llama3.1:8b",
+    model=LLM_MODEL,
     messages=[
         {
             "role": "system",
