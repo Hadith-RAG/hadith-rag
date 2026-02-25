@@ -1,166 +1,111 @@
-import chromadb
-import ollama
-import os
-from dotenv import load_dotenv
+"""
+HadithRAG — Agentic Search CLI
 
-# Load environment variables
-load_dotenv()
+3-stage LLM pipeline:
+  Stage 1: Reasoning   (llama3.2:3b)  — query understanding
+  Stage 2: Routing     (llama3.2:3b)  — retrieve or direct answer
+  Stage 3: Judge       (llama3.1:8b)  — validate & compose answer
 
-# Get configuration from environment variables
-CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text:latest")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1:8b")
-N_RESULTS = int(os.getenv("N_RESULTS", "3"))
-SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.5"))
+Usage:
+    python search.py
+"""
 
-# --- Layer 1: Keyword Intent Classifier ---
-GREETING_PATTERNS = [
-    "hello",
-    "hi",
-    "hey",
-    "salam",
-    "assalamu",
-    "greetings",
-    "good morning",
-    "good evening",
-    "good night",
-    "how are you",
-    "thank you",
-    "thanks",
-    "bye",
-    "goodbye",
-    "who are you",
-    "what can you do",
-    "what are you",
-]
+import sys
+from pathlib import Path
+
+# Ensure project root is on sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from config import settings
+from agents.reasoning import reason
+from agents.router import route
+from agents.judge import judge_and_answer, direct_answer
+from retriever.vector.retriever import VectorRetriever
 
 
-def is_greeting(query: str) -> bool:
-    """Return True if the query is a greeting or off-topic pleasantry."""
-    q = query.lower().strip()
-    return any(q.startswith(p) or q == p for p in GREETING_PATTERNS)
+def print_header():
+    """Print the application header."""
+    print("=" * 60)
+    print("  HadithRAG — Agentic Search")
+    print(f"  Models: {settings.small_llm_model} (reasoning/routing)")
+    print(f"          {settings.llm_model} (judge/answer)")
+    print("=" * 60)
+    print()
 
 
-# Connect to ChromaDB
-client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-collection = client.get_collection("hadith_collection")
+def print_stage(stage_num: int, name: str, detail: str = ""):
+    """Print a stage indicator."""
+    print(f"\n[Stage {stage_num}] {name}")
+    if detail:
+        print(f"  → {detail}")
 
-# Get user query
-query = input("Enter your question: ")
 
-# --- Check Layer 1 first (no embedding cost) ---
-if is_greeting(query):
-    retrieval_relevant = False
-    refs = []
-    print("\n--- LLM Answer ---\n")
-    stream = ollama.chat(
-        model=LLM_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful Islamic scholar assistant. "
-                    "Respond warmly and helpfully to the user. "
-                    "Do NOT fabricate or cite any hadiths — none were retrieved for this query."
-                ),
-            },
-            {
-                "role": "user",
-                "content": query,
-            },
-        ],
-        stream=True,
-    )
-    for chunk in stream:
-        print(chunk.message.content, end="", flush=True)
-    print("\n")
+def print_references(citations: list[dict]):
+    """Print referenced hadiths."""
+    if not citations:
+        return
 
-else:
-    # Embed the query
-    response = ollama.embeddings(model=EMBEDDING_MODEL, prompt=query)
-    query_embedding = response["embedding"]
-
-    # Retrieve top relevant hadiths
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=N_RESULTS,
-        include=["documents", "metadatas", "distances"],
-    )
-
-    # --- Layer 2: Similarity Threshold Check ---
-    # ChromaDB cosine distance = 1 - cosine_similarity (range: 0.0 to 2.0)
-    # So: cosine_similarity = 1 - cosine_distance (range: 0.0 to 1.0)
-    top_distance = results["distances"][0][0]
-    top_similarity = 1.0 - top_distance  # Correct cosine inversion
-
-    retrieval_relevant = top_similarity >= SIMILARITY_THRESHOLD
-
-    if retrieval_relevant:
-        # Build context from retrieved hadiths
-        context_parts = []
-        refs = []
-        for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-            context_parts.append(f"[{meta['book']} #{meta['number']}] {doc}")
-            refs.append((meta["book"], meta["number"], doc))
-
-        context = "\n\n".join(context_parts)
-
-        print("\n--- LLM Answer ---\n")
-        stream = ollama.chat(
-            model=LLM_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an Islamic scholar assistant. "
-                        "Use the provided hadiths retrieved via RAG to answer the user's question "
-                        "accurately and respectfully. Base your answer strictly on the given hadiths."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Hadiths:\n{context}\n\nQuestion: {query}",
-                },
-            ],
-            stream=True,
-        )
-        for chunk in stream:
-            print(chunk.message.content, end="", flush=True)
-        print("\n")
-
-    else:
-        # Low relevance — answer without hadiths
-        refs = []
-        print("\n--- LLM Answer ---\n")
-        stream = ollama.chat(
-            model=LLM_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful Islamic scholar assistant. "
-                        "Answer the user's question based on your general knowledge. "
-                        "Do NOT fabricate or cite any specific hadiths — none were relevant enough to retrieve."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": query,
-                },
-            ],
-            stream=True,
-        )
-        for chunk in stream:
-            print(chunk.message.content, end="", flush=True)
-        print("\n")
+    print("\n--- Referenced Hadiths ---\n")
+    for c in citations:
         print(
-            f"(No hadiths retrieved — top cosine similarity: {top_similarity:.3f}, threshold: {SIMILARITY_THRESHOLD})\n"
+            f"[{c['index']}] {c['book']} | Hadith #{c['number']} (score: {c['score']:.3f})"
         )
-
-# Print referenced hadiths only when relevant
-if refs:
-    print("--- Referenced Hadiths ---\n")
-    for i, (book, number, doc) in enumerate(refs, 1):
-        print(f"[{i}] {book} | Hadith #{number}")
-        print(f"    {doc}")
+        # Truncate long texts for display
+        text = c["text"]
+        if len(text) > 200:
+            text = text[:200] + "..."
+        print(f"    {text}")
         print()
+
+
+def main():
+    """Main entry point — runs the agentic search pipeline."""
+    print_header()
+
+    query = input("Enter your question: ").strip()
+    if not query:
+        print("No query provided. Exiting.")
+        return
+
+    # ─── Stage 1: Reasoning ───────────────────────────────────
+    print_stage(1, "Reasoning", f"Analyzing query with {settings.small_llm_model}...")
+    reasoning = reason(query)
+    print(f"  Intent: {reasoning['intent']}")
+    print(f"  Reformulated: {reasoning['reformulated_query']}")
+    print(f"  Key terms: {', '.join(reasoning['key_terms'])}")
+
+    # ─── Stage 2: Routing ─────────────────────────────────────
+    print_stage(2, "Routing", f"Deciding action with {settings.small_llm_model}...")
+    routing = route(query, reasoning)
+    print(f"  Action: {routing['action']}")
+    print(f"  Reason: {routing['reason']}")
+
+    # ─── Branch: Direct Answer ────────────────────────────────
+    if routing["action"] == "direct_answer":
+        print_stage(3, "Direct Answer", f"Responding with {settings.llm_model}...")
+        direct_answer(query)
+        print()
+        return
+
+    # ─── Branch: Retrieve + Judge ─────────────────────────────
+    print_stage(3, "Retrieval", "Searching ChromaDB...")
+    retriever = VectorRetriever()
+    search_query = reasoning.get("reformulated_query") or query
+    results = retriever.retrieve(search_query)
+    print(f"  Found {len(results)} hadiths (top score: {results[0].score:.3f})")
+
+    # ─── Stage 4: Judge ───────────────────────────────────────
+    print_stage(
+        4, "Judge & Answer", f"Validating relevance with {settings.llm_model}..."
+    )
+    judgment = judge_and_answer(query, results)
+
+    # Print references if relevant
+    print_references(judgment.get("citations", []))
+
+    print()
+
+
+if __name__ == "__main__":
+    main()

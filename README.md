@@ -1,8 +1,59 @@
-# Hadith RAG
+# HadithRAG — Agentic Hadith Search System
 
-A semantic search and question-answering system over **Sahih al-Bukhari** hadiths. Ask a question in plain English — the system retrieves the most relevant hadiths and uses a local LLM to compose a grounded, scholarly answer.
+A semantic search and question-answering system over **Sahih al-Bukhari** hadiths, powered by a **3-stage agentic LLM pipeline**. Ask a question in plain English — intelligent agents decide whether to retrieve hadiths, validate relevance, and compose a scholarly answer with citations.
 
-**Stack:** Python · ChromaDB · Ollama · nomic-embed-text · llama3.1:8b
+**Stack:** Python · ChromaDB · Ollama · nomic-embed-text · llama3.2:3b · llama3.1:8b
+
+---
+
+## Architecture — Agentic Flow
+
+```
+USER INPUT
+    │
+    ▼
+┌─────────────────────────────────────┐
+│  Stage 1: REASONING AGENT          │
+│  Model: llama3.2:3b                │
+│  Job: Understand query, extract    │
+│       intent, reformulate for      │
+│       better retrieval             │
+└──────────────┬──────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────┐
+│  Stage 2: ROUTING AGENT            │
+│  Model: llama3.2:3b                │
+│  Job: Decide — does this query     │
+│       need hadith retrieval or     │
+│       a direct answer?             │
+└──────────┬──────────┬───────────────┘
+           │          │
+     ┌─────┘          └─────┐
+     ▼                      ▼
+ [RETRIEVE]           [DIRECT ANSWER]
+     │                      │
+     ▼                      ▼
+┌──────────────┐   ┌──────────────────┐
+│ ChromaDB     │   │ LLM answers      │
+│ Vector Search│   │ without hadiths  │
+│ (top 3)      │   │ (greetings, etc) │
+└──────┬───────┘   └──────────────────┘
+       │
+       ▼
+┌─────────────────────────────────────┐
+│  Stage 3: JUDGE AGENT              │
+│  Model: llama3.1:8b                │
+│  Job: Validate retrieved hadiths   │
+│       are relevant. If yes →       │
+│       compose answer with          │
+│       citations. If no → "I don't  │
+│       have knowledge on this."     │
+└─────────────────────────────────────┘
+       │
+       ▼
+    RESPONSE
+```
 
 ---
 
@@ -10,178 +61,189 @@ A semantic search and question-answering system over **Sahih al-Bukhari** hadith
 
 ```
 hadith-rag/
-├── data.py            # Dataset — 100 hadiths from Sahih al-Bukhari
-├── generate_data.py   # Generates data.py from the raw Bukhari JSON
-├── store.py           # Step 1 — Embed hadiths and store in ChromaDB
-├── search.py          # Step 2 — Ask a question, get an LLM answer + references
-├── chroma_db/         # Auto-generated vector database (gitignored)
-├── Requirements.md    # Full list of dependencies
-└── README.md          # You are here
+│
+├── search.py              # CLI entry point — runs the full agentic pipeline
+├── config.py              # Centralized settings (all env vars in one place)
+├── data.py                # 100 hadiths from Sahih al-Bukhari
+├── requirements.txt       # Python dependencies
+├── .env                   # Environment configuration
+│
+├── hadith/                # Shared kernel package
+│   ├── __init__.py        # Re-exports core types
+│   ├── models.py          # HadithRecord + HadithResult dataclasses
+│   └── llm.py             # Ollama chat wrappers (streaming, JSON parsing)
+│
+├── retriever/             # Retrieval package
+│   ├── __init__.py
+│   └── vector/            # ChromaDB vector retriever
+│       ├── __init__.py
+│       ├── retriever.py   # VectorRetriever — semantic similarity search
+│       └── ingest.py      # Embed hadiths → store in ChromaDB
+│
+├── agents/                # Agentic LLM pipeline
+│   ├── __init__.py
+│   ├── reasoning.py       # Stage 1 — query understanding (llama3.2:3b)
+│   ├── router.py          # Stage 2 — retrieve or direct (llama3.2:3b)
+│   └── judge.py           # Stage 3 — validate & answer (llama3.1:8b)
+│
+├── chroma_db/             # Auto-generated vector database (gitignored)
+├── Requirements.md        # Full dependency documentation
+├── ARCHITECTURE.md        # Deep technical guide
+└── README.md              # This file
 ```
 
 ---
 
 ## Prerequisites
 
-Before starting, make sure you have the following installed:
+| Requirement | Version | Notes                            |
+| ----------- | ------- | -------------------------------- |
+| Python      | 3.10+   | Tested on Python 3.10            |
+| Ollama      | Latest  | Local LLM runtime                |
+| Docker      | Latest  | For sunnah.com API (data source) |
 
-- **Python 3.10+** — [Download Python](https://www.python.org/downloads/)
-- **Ollama** — [Download Ollama](https://ollama.com/download)
+### Ollama Models
 
-See [Requirements.md](Requirements.md) for the complete dependency list.
+```bash
+ollama pull nomic-embed-text    # Embeddings (274 MB)
+ollama pull llama3.2:3b         # Reasoning + Routing agents (2.0 GB)
+ollama pull llama3.1:8b         # Judge + Final answer (4.9 GB)
+```
 
 ---
 
 ## Setup
 
-### 1. Clone the Repository
+### 1. Clone & Navigate
 
 ```bash
 git clone <your-repo-url>
 cd hadith-rag
 ```
 
-### 2. Create a Virtual Environment
+### 2. Virtual Environment
 
 ```bash
 python -m venv venv
-```
 
-### 3. Activate the Virtual Environment
-
-**Windows (PowerShell):**
-
-```powershell
+# Windows (PowerShell)
 .\venv\Scripts\activate
-```
 
-**Windows (CMD):**
-
-```cmd
-venv\Scripts\activate
-```
-
-**macOS / Linux:**
-
-```bash
+# macOS / Linux
 source venv/bin/activate
 ```
 
-> You should see `(venv)` at the beginning of your terminal prompt.
-
-### 4. Install Python Dependencies
+### 3. Install Dependencies
 
 ```bash
-pip install chromadb ollama
+pip install -r requirements.txt
 ```
 
-### 5. Set Up Ollama Models
+### 4. Configure Environment
 
-1. Download and install Ollama from [ollama.com](https://ollama.com/download)
-2. Start the Ollama application
-3. Pull both required models:
+Copy `.example.env` to `.env` and adjust if needed:
+
+```env
+CHROMA_DB_PATH=./chroma_db
+EMBEDDING_MODEL=nomic-embed-text:latest
+LLM_MODEL=llama3.1:8b
+SMALL_LLM_MODEL=llama3.2:3b
+N_RESULTS=3
+```
+
+### 5. Ingest into ChromaDB
 
 ```bash
-ollama pull nomic-embed-text
-ollama pull llama3.1:8b
+python -m retriever.vector.ingest
 ```
 
-> Ollama must be **running in the background** whenever you use `store.py` or `search.py`.
-
----
-
-## Usage
-
-### Step 1: Store Hadiths
-
-Run `store.py` once to embed all 100 hadiths and save them to the local ChromaDB database:
-
-```bash
-python store.py
-```
-
-**Expected output:**
+Expected output:
 
 ```
-SUCCESS: Stored in ChromaDB
+Ingesting 100 hadiths into ChromaDB...
+  [10/100] embedded
+  [20/100] embedded
+  ...
+SUCCESS: 100 hadiths stored in ChromaDB
 ```
 
-You only need to run this **once** (or again if you update `data.py`).
-
-### Step 2: Ask a Question
-
-Run `search.py` to ask a question and get an LLM-generated answer:
+### 6. Run Agentic Search
 
 ```bash
 python search.py
 ```
 
-You will be prompted to enter a question:
+---
+
+## Usage Examples
+
+### Hadith Query (Retrieves)
 
 ```
-Enter your question: What does Islam say about good deeds?
-```
+Enter your question: What did the Prophet say about prayer?
 
-**Example output:**
+[Stage 1] Reasoning
+  → Intent: hadith_search
+  → Reformulated: hadiths about prayer salah importance and rulings
 
-```
+[Stage 2] Routing
+  → Action: retrieve
+
+[Stage 3] Retrieval
+  → Found 3 hadiths (top score: 0.782)
+
+[Stage 4] Judge & Answer
 --- LLM Answer ---
-
-Based on the hadiths provided, Islam places great emphasis on good deeds...
-[Streamed word-by-word as the model generates]
+Based on the retrieved hadiths, the Prophet (ﷺ) emphasized...
 
 --- Referenced Hadiths ---
-
-[1] Sahih al-Bukhari | Hadith #28
-    Narrated Abu Huraira: The Prophet said, "To feed (the poor)..."
-
-[2] Sahih al-Bukhari | Hadith #43
-    Narrated 'Aisha: ...the best deed in the sight of Allah is that which is done regularly.
-
-[3] Sahih al-Bukhari | Hadith #59
+[1] bukhari | Hadith #8 (score: 0.782)
     ...
+```
+
+### Greeting (Direct Answer)
+
+```
+Enter your question: Hello!
+
+[Stage 1] Reasoning → Intent: greeting
+[Stage 2] Routing → Action: direct_answer
+[Stage 3] Direct Answer
+
+Assalamu alaikum! I'm here to help with Islamic hadith questions...
+```
+
+### Off-Topic (Direct Answer)
+
+```
+Enter your question: What is quantum physics?
+
+[Stage 1] Reasoning → Intent: off_topic
+[Stage 2] Routing → Action: direct_answer
+[Stage 3] Direct Answer
+
+I'm specialized in Islamic hadith knowledge...
 ```
 
 ---
 
-## How It Works
+## Model Strategy
 
-```
-┌──────────┐     ┌───────────┐     ┌──────────────┐
-│  data.py │────>│  store.py │────>│   ChromaDB   │
-│ 100 hadiths    │ embed via  │     │ vector store │
-│          │     │ nomic-embed│     └──────┬───────┘
-└──────────┘     └───────────┘            │
-                                          │ similarity search
-┌──────────┐     ┌───────────┐            │
-│  User    │────>│ search.py │────────────┘
-│ Question │     │ embed +   │
-│          │     │ retrieve  │────> llama3.1:8b
-└──────────┘     └───────────┘           │
-                                         ▼
-                              ┌─────────────────────┐
-                              │   LLM Answer        │
-                              │   (streamed live)   │
-                              ├─────────────────────┤
-                              │  Referenced Hadiths │
-                              │  [1] Book | #N      │
-                              └─────────────────────┘
-```
-
-1. **Store phase** — Each hadith is converted into a vector embedding using `nomic-embed-text` via Ollama, then stored in ChromaDB
-2. **Search phase** — Your question is embedded the same way; ChromaDB finds the top 3 most semantically similar hadiths
-3. **Answer phase** — The retrieved hadiths + your question are sent to `llama3.1:8b` with a system prompt; the answer streams live to your terminal
-4. **References** — The 3 source hadiths are printed at the end so every claim is traceable
+| Agent                    | Model              | Size   | Purpose              |
+| ------------------------ | ------------------ | ------ | -------------------- |
+| Reasoning (Stage 1)      | `llama3.2:3b`      | 2.0 GB | Fast query analysis  |
+| Routing (Stage 2)        | `llama3.2:3b`      | 2.0 GB | Fast classification  |
+| Judge + Answer (Stage 3) | `llama3.1:8b`      | 4.9 GB | Quality final answer |
+| Embeddings               | `nomic-embed-text` | 274 MB | Vector embeddings    |
 
 ---
 
 ## Notes
 
-- `chroma_db/` is auto-generated and included in `.gitignore` — do not commit it
-- To rebuild the database, delete the `chroma_db/` folder and re-run `python store.py`
-- The dataset contains the **first 100 hadiths** from Sahih al-Bukhari with full English narrator and text
-- The LLM answer streams word-by-word — first output appears within a few seconds
-- Generation time depends on your hardware (CPU: ~1–3 min, GPU: much faster)
+- `chroma_db/` is auto-generated — delete it and re-run ingest to rebuild
+- Ollama must be **running** before executing any script
+- The agentic pipeline makes 2–3 LLM calls per query (faster on GPU)
+- `data.py` contains 100 hadiths for testing — increase `HADITH_COUNT` in `.env` for more
 
 ---
 
