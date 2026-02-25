@@ -1,3 +1,4 @@
 chromadb
 ollama
 python-dotenv
+requests
